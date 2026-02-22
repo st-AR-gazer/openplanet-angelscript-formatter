@@ -1,0 +1,69 @@
+{
+  "name": "openplanet-angelscript-formatter",
+  "displayName": "Openplanet AngelScript Formatter",
+  "description": "Standalone formatter for Openplanet AngelScript with deterministic brace/indent/spacing rules.",
+  "version": "0.1.0",
+  "publisher": "ar",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Formatters"
+  ],
+  "activationEvents": [
+    "onLanguage:openplanet-angelscript"
+  ],
+  "main": "./out/extension.js",
+  "extensionDependencies": [
+    "ar.openplanet-angelscript-syntax"
+  ],
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -w -p .",
+    "test": "npm run -s compile && node out/formatter.test.js"
+  },
+  "contributes": {
+    "configuration": {
+      "title": "Openplanet AngelScript Formatter",
+      "properties": {
+        "openplanetAngelscriptFormatter.maxBlankLines": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0,
+          "description": "Maximum number of consecutive blank lines kept by the formatter."
+        },
+        "openplanetAngelscriptFormatter.trimTrailingWhitespace": {
+          "type": "boolean",
+          "default": true,
+          "description": "Trim trailing spaces on each line during formatting."
+        },
+        "openplanetAngelscriptFormatter.insertFinalNewline": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ensure the formatted document ends with a newline."
+        },
+        "openplanetAngelscriptFormatter.spaceAroundOperators": {
+          "type": "boolean",
+          "default": true,
+          "description": "Insert spaces around binary operators."
+        },
+        "openplanetAngelscriptFormatter.keepPreprocessorColumnZero": {
+          "type": "boolean",
+          "default": true,
+          "description": "Keep preprocessor directives at column 0 (no indentation)."
+        },
+        "openplanetAngelscriptFormatter.blankLineBetweenTopLevelDeclarations": {
+          "type": "boolean",
+          "default": true,
+          "description": "Insert a blank line between consecutive top-level declarations."
+        }
+      }
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.108.0",
+    "typescript": "^5.5.0"
+  }
+}
