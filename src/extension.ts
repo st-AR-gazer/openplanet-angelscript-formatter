@@ -1,6 +1,10 @@
 import * as vscode from "vscode";
 
-import { formatAngelScript, type AngelScriptFormatterOptions } from "./formatter";
+import {
+  formatAngelScript,
+  formatAngelScriptRangeEdit,
+  type AngelScriptFormatterOptions,
+} from "./formatter";
 
 const CONFIG_ROOT = "openplanetAngelscriptFormatter";
 const LANGUAGE_ID = "openplanet-angelscript";
@@ -16,6 +20,7 @@ function readFormatterSettings(
     indentSize: Math.max(1, Math.floor(formatting.tabSize)),
     useTabs: !formatting.insertSpaces,
     maxBlankLines: Math.max(0, config.get<number>("maxBlankLines", 1)),
+    maxLineWidth: Math.max(0, config.get<number>("maxLineWidth", 120)),
     trimTrailingWhitespace: config.get<boolean>("trimTrailingWhitespace", true),
     insertFinalNewline: overrideFinalNewline ?? insertFinalNewlineConfig,
     spaceAroundOperators: config.get<boolean>("spaceAroundOperators", true),
@@ -24,6 +29,10 @@ function readFormatterSettings(
       "blankLineBetweenTopLevelDeclarations",
       true,
     ),
+    argumentWrap: readWrapStyle(config.get<string>("argumentWrap"), "auto"),
+    chainWrap: readWrapStyle(config.get<string>("chainWrap"), "auto"),
+    chainWrapStyle: readChainWrapStyle(config.get<string>("chainWrapStyle"), "leadingDot"),
+    braceStyle: readBraceStyle(config.get<string>("braceStyle"), "kr"),
   };
 }
 
@@ -50,18 +59,27 @@ export function activate(context: vscode.ExtensionContext): void {
       provideDocumentRangeFormattingEdits(document, range, options) {
         const settings = readFormatterSettings(options, false);
         const normalizedRange = normalizeRangeForFormatting(document, range);
-        const rangeText = document.getText(normalizedRange);
-        const formatted = formatAngelScript(rangeText, settings);
-        const baseIndent = readLeadingIndentation(
-          document.lineAt(normalizedRange.start.line).text,
+        const startLine = normalizedRange.start.line;
+        const endLine =
+          normalizedRange.end.character === 0 && normalizedRange.end.line > startLine
+            ? normalizedRange.end.line - 1
+            : normalizedRange.end.line;
+        const documentText = document.getText();
+        const rangeEdit = formatAngelScriptRangeEdit(
+          documentText,
+          startLine,
+          endLine,
+          settings,
         );
-        const rebased = applyBaseIndentation(
-          formatted,
-          baseIndent,
-          settings.keepPreprocessorColumnZero,
-        );
-        if (rebased === rangeText) return [];
-        return [vscode.TextEdit.replace(normalizedRange, rebased)];
+        const eol = document.eol === vscode.EndOfLine.CRLF ? "\r\n" : "\n";
+        let replacementText = rangeEdit.replacementText.replace(/\n/g, eol);
+        if (endLine < document.lineCount - 1 && !replacementText.endsWith(eol)) {
+          replacementText += eol;
+        }
+        if (replacementText === document.getText(normalizedRange)) {
+          return [];
+        }
+        return [vscode.TextEdit.replace(normalizedRange, replacementText)];
       },
     };
 
@@ -73,6 +91,46 @@ export function activate(context: vscode.ExtensionContext): void {
 
 export function deactivate(): void {
   // no-op
+}
+
+function readWrapStyle(
+  value: string | undefined,
+  fallback: "never" | "auto" | "always",
+): "never" | "auto" | "always" {
+  switch (value) {
+    case "never":
+    case "auto":
+    case "always":
+      return value;
+    default:
+      return fallback;
+  }
+}
+
+function readBraceStyle(
+  value: string | undefined,
+  fallback: "kr" | "allman",
+): "kr" | "allman" {
+  switch (value) {
+    case "kr":
+    case "allman":
+      return value;
+    default:
+      return fallback;
+  }
+}
+
+function readChainWrapStyle(
+  value: string | undefined,
+  fallback: "leadingDot" | "trailingDot",
+): "leadingDot" | "trailingDot" {
+  switch (value) {
+    case "leadingDot":
+    case "trailingDot":
+      return value;
+    default:
+      return fallback;
+  }
 }
 
 function normalizeRangeForFormatting(
@@ -89,36 +147,4 @@ function normalizeRangeForFormatting(
   const start = new vscode.Position(startLine, 0);
   const end = document.lineAt(endLine).rangeIncludingLineBreak.end;
   return new vscode.Range(start, end);
-}
-
-function readLeadingIndentation(lineText: string): string {
-  const match = /^[\t ]*/.exec(lineText);
-  return match?.[0] ?? "";
-}
-
-function applyBaseIndentation(
-  formattedText: string,
-  baseIndent: string,
-  keepPreprocessorColumnZero: boolean,
-): string {
-  if (!baseIndent || formattedText.trim().length === 0) {
-    return formattedText;
-  }
-
-  const hadTrailingNewline = formattedText.endsWith("\n");
-  const lines = formattedText.split("\n");
-  const rebased = lines.map((line) => {
-    if (line.trim().length === 0) {
-      return line;
-    }
-    if (keepPreprocessorColumnZero && line.trimStart().startsWith("#")) {
-      return line.trimStart();
-    }
-    return `${baseIndent}${line}`;
-  });
-  let text = rebased.join("\n");
-  if (hadTrailingNewline && !text.endsWith("\n")) {
-    text += "\n";
-  }
-  return text;
 }

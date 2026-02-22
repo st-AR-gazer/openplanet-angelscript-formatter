@@ -2,22 +2,38 @@ export interface AngelScriptFormatterOptions {
   indentSize: number;
   useTabs: boolean;
   maxBlankLines: number;
+  maxLineWidth: number;
   trimTrailingWhitespace: boolean;
   insertFinalNewline: boolean;
   spaceAroundOperators: boolean;
   keepPreprocessorColumnZero: boolean;
   blankLineBetweenTopLevelDeclarations: boolean;
+  argumentWrap: "never" | "auto" | "always";
+  chainWrap: "never" | "auto" | "always";
+  chainWrapStyle: "leadingDot" | "trailingDot";
+  braceStyle: "kr" | "allman";
+}
+
+export interface AngelScriptRangeEdit {
+  startLine: number;
+  endLine: number;
+  replacementText: string;
 }
 
 export const DEFAULT_FORMATTER_OPTIONS: AngelScriptFormatterOptions = {
   indentSize: 2,
   useTabs: false,
   maxBlankLines: 1,
+  maxLineWidth: 120,
   trimTrailingWhitespace: true,
   insertFinalNewline: true,
   spaceAroundOperators: true,
   keepPreprocessorColumnZero: true,
   blankLineBetweenTopLevelDeclarations: true,
+  argumentWrap: "auto",
+  chainWrap: "auto",
+  chainWrapStyle: "leadingDot",
+  braceStyle: "kr",
 };
 
 type TokenKind =
@@ -176,6 +192,7 @@ const SINGLE_CHAR_PUNCTUATION = new Set(["{", "}", "(", ")", "[", "]", ",", ";",
 const SINGLE_CHAR_OPERATORS = new Set(["=", "+", "-", "*", "/", "%", "<", ">", "!", "~", "&", "|", "^", "@"]);
 const PREFIX_UNARY_OPERATORS = new Set(["+", "-", "!", "~", "@", "*", "&", "++", "--", "not"]);
 const NO_SPACE_AROUND_OPERATORS = new Set(["::", ".", "->"]);
+const formatterDirectivePattern = /^\s*\/\/\s*opfmt-(disable-next-line|disable-start|disable-end|disable|enable)\b/i;
 
 function isDigit(ch: string): boolean {
   return ch >= "0" && ch <= "9";
@@ -501,9 +518,10 @@ function shouldInsertSpace(
   if (current.value === ":") {
     if (previous.value === "?") return true;
     if (previous.value === "case" || previous.value === "default") return false;
-    return false;
+    return true;
   }
 
+  if (previous.value === "?") return true;
   if (previous.value === ":") return isWordLike(current);
 
   if (current.value === "?") return true;
@@ -612,17 +630,10 @@ function isTopLevelDeclarationStart(tokens: Token[], startIndex: number): boolea
   return false;
 }
 
-export function formatAngelScript(
+function formatAngelScriptCore(
   text: string,
-  partialOptions: Partial<AngelScriptFormatterOptions> = {},
+  options: AngelScriptFormatterOptions,
 ): string {
-  const options: AngelScriptFormatterOptions = {
-    ...DEFAULT_FORMATTER_OPTIONS,
-    ...partialOptions,
-    indentSize: Math.max(1, partialOptions.indentSize ?? DEFAULT_FORMATTER_OPTIONS.indentSize),
-    maxBlankLines: Math.max(0, partialOptions.maxBlankLines ?? DEFAULT_FORMATTER_OPTIONS.maxBlankLines),
-  };
-
   if (text.trim().length === 0) {
     return options.insertFinalNewline ? "\n" : "";
   }
@@ -774,4 +785,1074 @@ export function formatAngelScript(
 
   flushPendingNewlines();
   return normalizeOutput(output, options);
+}
+
+export function formatAngelScript(
+  text: string,
+  partialOptions: Partial<AngelScriptFormatterOptions> = {},
+): string {
+  const options = buildFormatterOptions(partialOptions);
+  if (text.trim().length === 0) {
+    return options.insertFinalNewline ? "\n" : "";
+  }
+
+  const suppressionState = computeSuppressionState(text);
+  const hasSuppressions = suppressionState.some((value) => value === false);
+  if (!hasSuppressions) {
+    const formatted = formatAngelScriptCore(text, options);
+    return applyPostFormattingPasses(formatted, options);
+  }
+
+  return formatWithSuppressions(text, suppressionState, options);
+}
+
+export function formatAngelScriptRange(
+  text: string,
+  startLine: number,
+  endLine: number,
+  partialOptions: Partial<AngelScriptFormatterOptions> = {},
+): string {
+  const rangeEdit = formatAngelScriptRangeEdit(text, startLine, endLine, partialOptions);
+  const lines = text.replace(/\r/g, "").split("\n");
+  if (lines.length === 0) {
+    return text;
+  }
+
+  const outputLines = [...lines];
+  const replacementLines = rangeEdit.replacementText.split("\n");
+  outputLines.splice(
+    rangeEdit.startLine,
+    rangeEdit.endLine - rangeEdit.startLine + 1,
+    ...replacementLines
+  );
+
+  const hadTrailingNewline = text.endsWith("\n");
+  let result = outputLines.join("\n");
+  if (hadTrailingNewline && !result.endsWith("\n")) {
+    result += "\n";
+  }
+  return result;
+}
+
+export function formatAngelScriptRangeEdit(
+  text: string,
+  startLine: number,
+  endLine: number,
+  partialOptions: Partial<AngelScriptFormatterOptions> = {},
+): AngelScriptRangeEdit {
+  const options = buildFormatterOptions(partialOptions);
+  const lines = text.replace(/\r/g, "").split("\n");
+  if (lines.length === 0) {
+    return {
+      startLine: 0,
+      endLine: 0,
+      replacementText: ""
+    };
+  }
+
+  const normalizedStart = Math.max(0, Math.min(startLine, lines.length - 1));
+  const normalizedEnd = Math.max(normalizedStart, Math.min(endLine, lines.length - 1));
+  const rangeText = lines.slice(normalizedStart, normalizedEnd + 1).join("\n");
+  const formattedRangeRaw = formatAngelScript(rangeText, {
+    ...partialOptions,
+    insertFinalNewline: false,
+  });
+  const replacementText = applyBaseIndentation(
+    formattedRangeRaw,
+    readLeadingIndentation(lines[normalizedStart] ?? ""),
+    options.keepPreprocessorColumnZero,
+  );
+
+  return {
+    startLine: normalizedStart,
+    endLine: normalizedEnd,
+    replacementText
+  };
+}
+
+function buildFormatterOptions(
+  partialOptions: Partial<AngelScriptFormatterOptions>,
+): AngelScriptFormatterOptions {
+  const argumentWrap = readWrapStyle(partialOptions.argumentWrap, DEFAULT_FORMATTER_OPTIONS.argumentWrap);
+  const chainWrap = readWrapStyle(partialOptions.chainWrap, DEFAULT_FORMATTER_OPTIONS.chainWrap);
+  const chainWrapStyle = readChainWrapStyle(
+    partialOptions.chainWrapStyle,
+    DEFAULT_FORMATTER_OPTIONS.chainWrapStyle
+  );
+  const braceStyle = readBraceStyle(partialOptions.braceStyle, DEFAULT_FORMATTER_OPTIONS.braceStyle);
+  return {
+    ...DEFAULT_FORMATTER_OPTIONS,
+    ...partialOptions,
+    indentSize: Math.max(1, partialOptions.indentSize ?? DEFAULT_FORMATTER_OPTIONS.indentSize),
+    maxBlankLines: Math.max(0, partialOptions.maxBlankLines ?? DEFAULT_FORMATTER_OPTIONS.maxBlankLines),
+    maxLineWidth: Math.max(0, partialOptions.maxLineWidth ?? DEFAULT_FORMATTER_OPTIONS.maxLineWidth),
+    argumentWrap,
+    chainWrap,
+    chainWrapStyle,
+    braceStyle,
+  };
+}
+
+function formatWithSuppressions(
+  text: string,
+  lineFormatMask: boolean[],
+  options: AngelScriptFormatterOptions,
+): string {
+  const lines = text.replace(/\r/g, "").split("\n");
+  const segments = buildLineSegments(lineFormatMask);
+  const parts: string[] = [];
+
+  for (const segment of segments) {
+    const segmentText = lines.slice(segment.startLine, segment.endLine + 1).join("\n");
+    if (!segment.shouldFormat) {
+      parts.push(segmentText);
+      continue;
+    }
+    const formattedSegment = formatAngelScriptCore(segmentText, {
+      ...options,
+      insertFinalNewline: false,
+    });
+    const segmentWithoutBoundaryPadding =
+      segment.startLine > 0 ? formattedSegment.replace(/^\n+/g, "") : formattedSegment;
+    const postProcessed = applyPostFormattingPasses(segmentWithoutBoundaryPadding, {
+      ...options,
+      insertFinalNewline: false,
+    });
+    const baseIndent = readLeadingIndentation(lines[segment.startLine] ?? "");
+    parts.push(applyBaseIndentation(postProcessed, baseIndent, options.keepPreprocessorColumnZero));
+  }
+
+  let merged = parts.join("\n");
+  if (options.insertFinalNewline && !merged.endsWith("\n")) {
+    merged += "\n";
+  }
+  if (!options.insertFinalNewline && merged.endsWith("\n")) {
+    merged = merged.replace(/\n+$/g, "");
+  }
+  return merged;
+}
+
+function readLeadingIndentation(text: string): string {
+  const match = /^[\t ]*/.exec(text);
+  return match?.[0] ?? "";
+}
+
+function applyBaseIndentation(
+  formattedText: string,
+  baseIndent: string,
+  keepPreprocessorColumnZero: boolean,
+): string {
+  if (!baseIndent || formattedText.trim().length === 0) {
+    return formattedText;
+  }
+
+  const hadTrailingNewline = formattedText.endsWith("\n");
+  const lines = formattedText.split("\n");
+  let depth = 0;
+  const output = lines.map((line) => {
+    if (line.trim().length === 0) {
+      return line;
+    }
+    if (keepPreprocessorColumnZero && line.trimStart().startsWith("#")) {
+      return line.trimStart();
+    }
+    const trimmed = line.trimStart();
+    const startsWithClosingBrace = trimmed.startsWith("}");
+    const shouldSkipBaseIndent = startsWithClosingBrace && depth === 0;
+    const lineOutput = shouldSkipBaseIndent ? line : `${baseIndent}${line}`;
+
+    const openCount = countOccurrences(line, "{");
+    const closeCount = countOccurrences(line, "}");
+    depth = Math.max(0, depth + openCount - closeCount);
+    return lineOutput;
+  });
+
+  let text = output.join("\n");
+  if (hadTrailingNewline && !text.endsWith("\n")) {
+    text += "\n";
+  }
+  return text;
+}
+
+function countOccurrences(text: string, character: string): number {
+  let count = 0;
+  for (const ch of text) {
+    if (ch === character) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function computeSuppressionState(text: string): boolean[] {
+  const lines = text.replace(/\r/g, "").split("\n");
+  const shouldFormat = new Array<boolean>(lines.length).fill(true);
+  const disableNextLine = new Set<number>();
+  let fileDisabled = false;
+  let blockDepth = 0;
+
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+    const lineText = lines[lineIndex];
+    const directiveMatch = formatterDirectivePattern.exec(lineText);
+    const isDirective = directiveMatch !== null;
+    if (isDirective) {
+      shouldFormat[lineIndex] = false;
+    } else if (fileDisabled || blockDepth > 0 || disableNextLine.has(lineIndex)) {
+      shouldFormat[lineIndex] = false;
+    }
+
+    if (!isDirective) {
+      continue;
+    }
+
+    const directive = directiveMatch[1].toLowerCase();
+    if (directive === "disable-next-line") {
+      if (lineIndex + 1 < lines.length) {
+        disableNextLine.add(lineIndex + 1);
+      }
+      continue;
+    }
+    if (directive === "disable-start") {
+      blockDepth += 1;
+      continue;
+    }
+    if (directive === "disable-end") {
+      blockDepth = Math.max(0, blockDepth - 1);
+      continue;
+    }
+    if (directive === "disable") {
+      fileDisabled = true;
+      continue;
+    }
+    if (directive === "enable") {
+      fileDisabled = false;
+    }
+  }
+
+  return shouldFormat;
+}
+
+function buildLineSegments(
+  lineFormatMask: boolean[],
+): Array<{ startLine: number; endLine: number; shouldFormat: boolean }> {
+  if (lineFormatMask.length === 0) {
+    return [];
+  }
+  const segments: Array<{ startLine: number; endLine: number; shouldFormat: boolean }> = [];
+  let startLine = 0;
+  let currentState = lineFormatMask[0];
+
+  for (let index = 1; index < lineFormatMask.length; index++) {
+    if (lineFormatMask[index] === currentState) {
+      continue;
+    }
+    segments.push({
+      startLine,
+      endLine: index - 1,
+      shouldFormat: currentState,
+    });
+    startLine = index;
+    currentState = lineFormatMask[index];
+  }
+
+  segments.push({
+    startLine,
+    endLine: lineFormatMask.length - 1,
+    shouldFormat: currentState,
+  });
+  return segments;
+}
+
+function applyPostFormattingPasses(
+  text: string,
+  options: AngelScriptFormatterOptions,
+): string {
+  let output = text;
+  if (options.braceStyle === "allman") {
+    output = applyAllmanBraceStyle(output);
+  }
+  if (options.maxLineWidth > 0) {
+    output = applyLineWrapping(output, options);
+  }
+  return output;
+}
+
+function applyAllmanBraceStyle(text: string): string {
+  const hadTrailingNewline = text.endsWith("\n");
+  const lines = text.replace(/\r/g, "").split("\n");
+  const outputLines: string[] = [];
+
+  for (const line of lines) {
+    const trimmed = line.trimEnd();
+    if (trimmed.length === 0) {
+      outputLines.push(line);
+      continue;
+    }
+    if (trimmed.trim() === "{") {
+      outputLines.push(line);
+      continue;
+    }
+    if (trimmed.trimStart().startsWith("#")) {
+      outputLines.push(line);
+      continue;
+    }
+    if (!trimmed.endsWith("{")) {
+      outputLines.push(line);
+      continue;
+    }
+
+    const indent = line.match(/^[\t ]*/)?.[0] ?? "";
+    const withoutBrace = trimmed.slice(0, -1).trimEnd();
+    outputLines.push(withoutBrace);
+    outputLines.push(`${indent}{`);
+  }
+
+  let output = outputLines.join("\n");
+  if (hadTrailingNewline && !output.endsWith("\n")) {
+    output += "\n";
+  }
+  return output;
+}
+
+function applyLineWrapping(
+  text: string,
+  options: AngelScriptFormatterOptions,
+): string {
+  const hadTrailingNewline = text.endsWith("\n");
+  const lines = text.replace(/\r/g, "").split("\n");
+  const indentUnit = options.useTabs ? "\t" : " ".repeat(options.indentSize);
+  const output: string[] = [];
+
+  for (const line of lines) {
+    if (line.length <= options.maxLineWidth || options.maxLineWidth <= 0) {
+      output.push(line);
+      continue;
+    }
+    if (line.trimStart().startsWith("#")) {
+      output.push(line);
+      continue;
+    }
+    if (hasTopLevelTernary(line)) {
+      output.push(line);
+      continue;
+    }
+
+    let wrapped = tryWrapArguments(line, options, indentUnit);
+    if (wrapped.length === 1) {
+      wrapped = tryWrapChain(line, options, indentUnit);
+    }
+    output.push(...wrapped);
+  }
+
+  let outputText = output.join("\n");
+  if (hadTrailingNewline && !outputText.endsWith("\n")) {
+    outputText += "\n";
+  }
+  return outputText;
+}
+
+function tryWrapArguments(
+  line: string,
+  options: AngelScriptFormatterOptions,
+  indentUnit: string,
+): string[] {
+  if (options.argumentWrap === "never") {
+    return [line];
+  }
+  if (options.argumentWrap === "auto" && line.length <= options.maxLineWidth) {
+    return [line];
+  }
+  const candidate = findArgumentWrapCandidate(line);
+  if (candidate === null) {
+    return [line];
+  }
+  const { openParen, closeParen } = candidate;
+
+  const indent = line.match(/^[\t ]*/)?.[0] ?? "";
+  const prefix = line.slice(0, openParen + 1).trimEnd();
+  const argsText = line.slice(openParen + 1, closeParen);
+  const suffix = line.slice(closeParen + 1);
+  const args = splitTopLevelArguments(argsText);
+  if (args.length <= 1) {
+    return [line];
+  }
+
+  const wrapped: string[] = [prefix];
+  for (let index = 0; index < args.length; index++) {
+    const argument = args[index].trim();
+    const trailing = index < args.length - 1 ? "," : "";
+    wrapped.push(`${indent}${indentUnit}${argument}${trailing}`);
+  }
+  wrapped.push(`${indent})${suffix}`);
+  return wrapped;
+}
+
+function tryWrapChain(
+  line: string,
+  options: AngelScriptFormatterOptions,
+  indentUnit: string,
+): string[] {
+  if (options.chainWrap === "never") {
+    return [line];
+  }
+  if (options.chainWrap === "auto" && line.length <= options.maxLineWidth) {
+    return [line];
+  }
+  const indent = line.match(/^[\t ]*/)?.[0] ?? "";
+  const trimmed = line.trim();
+  const parts = splitTopLevelChain(trimmed);
+  if (parts.length <= 1) {
+    return [line];
+  }
+
+  if (options.chainWrapStyle === "trailingDot") {
+    const wrapped: string[] = [`${indent}${parts[0]}.`];
+    for (let index = 1; index < parts.length; index++) {
+      const trailingDot = index < parts.length - 1 ? "." : "";
+      wrapped.push(`${indent}${indentUnit}${parts[index]}${trailingDot}`);
+    }
+    return wrapped;
+  }
+
+  const wrapped: string[] = [`${indent}${parts[0]}`];
+  for (let index = 1; index < parts.length; index++) {
+    wrapped.push(`${indent}${indentUnit}.${parts[index]}`);
+  }
+  return wrapped;
+}
+
+function hasTopLevelTernary(line: string): boolean {
+  let parenDepth = 0;
+  let bracketDepth = 0;
+  let braceDepth = 0;
+  let angleDepth = 0;
+  let inString: "'" | "\"" | null = null;
+  let inBlockComment = false;
+  let sawQuestion = false;
+
+  for (let index = 0; index < line.length; index++) {
+    const ch = line[index];
+    const next = line[index + 1] ?? "";
+
+    if (inString !== null) {
+      if (ch === "\\") {
+        index += 1;
+        continue;
+      }
+      if (ch === inString) {
+        inString = null;
+      }
+      continue;
+    }
+    if (inBlockComment) {
+      if (ch === "*" && next === "/") {
+        inBlockComment = false;
+        index += 1;
+      }
+      continue;
+    }
+    if (ch === "/" && next === "/") {
+      break;
+    }
+    if (ch === "/" && next === "*") {
+      inBlockComment = true;
+      index += 1;
+      continue;
+    }
+    if (ch === "\"" || ch === "'") {
+      inString = ch;
+      continue;
+    }
+
+    if (ch === "(") {
+      parenDepth += 1;
+      continue;
+    }
+    if (ch === ")") {
+      parenDepth = Math.max(0, parenDepth - 1);
+      continue;
+    }
+    if (ch === "[") {
+      bracketDepth += 1;
+      continue;
+    }
+    if (ch === "]") {
+      bracketDepth = Math.max(0, bracketDepth - 1);
+      continue;
+    }
+    if (ch === "{") {
+      braceDepth += 1;
+      continue;
+    }
+    if (ch === "}") {
+      braceDepth = Math.max(0, braceDepth - 1);
+      continue;
+    }
+    if (ch === "<") {
+      angleDepth += 1;
+      continue;
+    }
+    if (ch === ">") {
+      angleDepth = Math.max(0, angleDepth - 1);
+      continue;
+    }
+
+    if (parenDepth !== 0 || bracketDepth !== 0 || braceDepth !== 0 || angleDepth !== 0) {
+      continue;
+    }
+
+    if (ch === "?") {
+      sawQuestion = true;
+      continue;
+    }
+    if (ch === ":" && sawQuestion) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function splitTopLevelArguments(text: string): string[] {
+  const parts: string[] = [];
+  let current = "";
+  let parenDepth = 0;
+  let bracketDepth = 0;
+  let braceDepth = 0;
+  let angleDepth = 0;
+  let inString: "'" | "\"" | null = null;
+  let inBlockComment = false;
+
+  for (let index = 0; index < text.length; index++) {
+    const ch = text[index];
+    const next = text[index + 1] ?? "";
+
+    if (inString !== null) {
+      current += ch;
+      if (ch === "\\") {
+        const escaped = text[index + 1];
+        if (escaped !== undefined) {
+          current += escaped;
+          index += 1;
+        }
+        continue;
+      }
+      if (ch === inString) {
+        inString = null;
+      }
+      continue;
+    }
+
+    if (inBlockComment) {
+      current += ch;
+      if (ch === "*" && next === "/") {
+        current += next;
+        index += 1;
+        inBlockComment = false;
+      }
+      continue;
+    }
+
+    if (ch === "/" && next === "/") {
+      current += text.slice(index);
+      break;
+    }
+    if (ch === "/" && next === "*") {
+      current += "/*";
+      index += 1;
+      inBlockComment = true;
+      continue;
+    }
+    if (ch === "\"" || ch === "'") {
+      inString = ch;
+      current += ch;
+      continue;
+    }
+
+    if (ch === "(") {
+      parenDepth += 1;
+      current += ch;
+      continue;
+    }
+    if (ch === ")") {
+      parenDepth = Math.max(0, parenDepth - 1);
+      current += ch;
+      continue;
+    }
+    if (ch === "[") {
+      bracketDepth += 1;
+      current += ch;
+      continue;
+    }
+    if (ch === "]") {
+      bracketDepth = Math.max(0, bracketDepth - 1);
+      current += ch;
+      continue;
+    }
+    if (ch === "{") {
+      braceDepth += 1;
+      current += ch;
+      continue;
+    }
+    if (ch === "}") {
+      braceDepth = Math.max(0, braceDepth - 1);
+      current += ch;
+      continue;
+    }
+    if (ch === "<") {
+      angleDepth += 1;
+      current += ch;
+      continue;
+    }
+    if (ch === ">") {
+      angleDepth = Math.max(0, angleDepth - 1);
+      current += ch;
+      continue;
+    }
+
+    if (
+      ch === "," &&
+      parenDepth === 0 &&
+      bracketDepth === 0 &&
+      braceDepth === 0 &&
+      angleDepth === 0
+    ) {
+      parts.push(current);
+      current = "";
+      continue;
+    }
+
+    current += ch;
+  }
+
+  parts.push(current);
+  return parts;
+}
+
+function findArgumentWrapCandidate(
+  line: string,
+): { openParen: number; closeParen: number } | null {
+  let inString: "'" | "\"" | null = null;
+  let inBlockComment = false;
+  let lineCommentStart = -1;
+  let parenDepth = 0;
+  let bracketDepth = 0;
+  let braceDepth = 0;
+  let angleDepth = 0;
+
+  for (let index = 0; index < line.length; index++) {
+    const ch = line[index];
+    const next = line[index + 1] ?? "";
+
+    if (inString !== null) {
+      if (ch === "\\") {
+        index += 1;
+        continue;
+      }
+      if (ch === inString) {
+        inString = null;
+      }
+      continue;
+    }
+    if (inBlockComment) {
+      if (ch === "*" && next === "/") {
+        inBlockComment = false;
+        index += 1;
+      }
+      continue;
+    }
+    if (ch === "/" && next === "/") {
+      lineCommentStart = index;
+      break;
+    }
+    if (ch === "/" && next === "*") {
+      inBlockComment = true;
+      index += 1;
+      continue;
+    }
+    if (ch === "\"" || ch === "'") {
+      inString = ch;
+      continue;
+    }
+
+    if (ch === "(") {
+      if (parenDepth === 0 && bracketDepth === 0 && braceDepth === 0 && angleDepth === 0) {
+        const previousWord = readPreviousWord(line, index);
+        if (
+          previousWord.length > 0 &&
+          !CONTROL_KEYWORDS_WITH_SPACE_BEFORE_PAREN.has(previousWord)
+        ) {
+          const closeParen = findMatchingParen(line, index);
+          if (closeParen > index) {
+            const argsText = line.slice(index + 1, closeParen);
+            if (hasTopLevelComma(argsText)) {
+              const remainder = line.slice(closeParen + 1);
+              if (lineCommentStart < 0 || closeParen < lineCommentStart) {
+                return { openParen: index, closeParen };
+              }
+              if (remainder.trimStart().startsWith("//")) {
+                return { openParen: index, closeParen };
+              }
+            }
+          }
+        }
+      }
+      parenDepth += 1;
+      continue;
+    }
+    if (ch === ")") {
+      parenDepth = Math.max(0, parenDepth - 1);
+      continue;
+    }
+    if (ch === "[") {
+      bracketDepth += 1;
+      continue;
+    }
+    if (ch === "]") {
+      bracketDepth = Math.max(0, bracketDepth - 1);
+      continue;
+    }
+    if (ch === "{") {
+      braceDepth += 1;
+      continue;
+    }
+    if (ch === "}") {
+      braceDepth = Math.max(0, braceDepth - 1);
+      continue;
+    }
+    if (ch === "<") {
+      angleDepth += 1;
+      continue;
+    }
+    if (ch === ">") {
+      angleDepth = Math.max(0, angleDepth - 1);
+      continue;
+    }
+  }
+
+  return null;
+}
+
+function readPreviousWord(line: string, fromIndexExclusive: number): string {
+  let index = fromIndexExclusive - 1;
+  while (index >= 0 && /\s/.test(line[index])) {
+    index -= 1;
+  }
+  if (index < 0) {
+    return "";
+  }
+  const endExclusive = index + 1;
+  while (index >= 0 && /[A-Za-z0-9_]/.test(line[index])) {
+    index -= 1;
+  }
+  return line.slice(index + 1, endExclusive);
+}
+
+function findMatchingParen(line: string, openParenIndex: number): number {
+  let depth = 0;
+  let inString: "'" | "\"" | null = null;
+  let inBlockComment = false;
+
+  for (let index = openParenIndex; index < line.length; index++) {
+    const ch = line[index];
+    const next = line[index + 1] ?? "";
+
+    if (inString !== null) {
+      if (ch === "\\") {
+        index += 1;
+        continue;
+      }
+      if (ch === inString) {
+        inString = null;
+      }
+      continue;
+    }
+    if (inBlockComment) {
+      if (ch === "*" && next === "/") {
+        inBlockComment = false;
+        index += 1;
+      }
+      continue;
+    }
+    if (ch === "/" && next === "/") {
+      return -1;
+    }
+    if (ch === "/" && next === "*") {
+      inBlockComment = true;
+      index += 1;
+      continue;
+    }
+    if (ch === "\"" || ch === "'") {
+      inString = ch;
+      continue;
+    }
+
+    if (ch === "(") {
+      depth += 1;
+      continue;
+    }
+    if (ch === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+
+  return -1;
+}
+
+function hasTopLevelComma(text: string): boolean {
+  let parenDepth = 0;
+  let bracketDepth = 0;
+  let braceDepth = 0;
+  let angleDepth = 0;
+  let inString: "'" | "\"" | null = null;
+  let inBlockComment = false;
+
+  for (let index = 0; index < text.length; index++) {
+    const ch = text[index];
+    const next = text[index + 1] ?? "";
+
+    if (inString !== null) {
+      if (ch === "\\") {
+        index += 1;
+        continue;
+      }
+      if (ch === inString) {
+        inString = null;
+      }
+      continue;
+    }
+    if (inBlockComment) {
+      if (ch === "*" && next === "/") {
+        inBlockComment = false;
+        index += 1;
+      }
+      continue;
+    }
+    if (ch === "/" && next === "/") {
+      break;
+    }
+    if (ch === "/" && next === "*") {
+      inBlockComment = true;
+      index += 1;
+      continue;
+    }
+    if (ch === "\"" || ch === "'") {
+      inString = ch;
+      continue;
+    }
+
+    if (ch === "(") {
+      parenDepth += 1;
+      continue;
+    }
+    if (ch === ")") {
+      parenDepth = Math.max(0, parenDepth - 1);
+      continue;
+    }
+    if (ch === "[") {
+      bracketDepth += 1;
+      continue;
+    }
+    if (ch === "]") {
+      bracketDepth = Math.max(0, bracketDepth - 1);
+      continue;
+    }
+    if (ch === "{") {
+      braceDepth += 1;
+      continue;
+    }
+    if (ch === "}") {
+      braceDepth = Math.max(0, braceDepth - 1);
+      continue;
+    }
+    if (ch === "<") {
+      angleDepth += 1;
+      continue;
+    }
+    if (ch === ">") {
+      angleDepth = Math.max(0, angleDepth - 1);
+      continue;
+    }
+
+    if (
+      ch === "," &&
+      parenDepth === 0 &&
+      bracketDepth === 0 &&
+      braceDepth === 0 &&
+      angleDepth === 0
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function splitTopLevelChain(line: string): string[] {
+  if (!line.includes(".")) {
+    return [line];
+  }
+
+  const parts: string[] = [];
+  let current = "";
+  let parenDepth = 0;
+  let bracketDepth = 0;
+  let braceDepth = 0;
+  let angleDepth = 0;
+  let inString: "'" | "\"" | null = null;
+  let inBlockComment = false;
+
+  for (let index = 0; index < line.length; index++) {
+    const ch = line[index];
+    const next = line[index + 1] ?? "";
+    const previous = index > 0 ? line[index - 1] : "";
+
+    if (inString !== null) {
+      current += ch;
+      if (ch === "\\") {
+        const escaped = line[index + 1];
+        if (escaped !== undefined) {
+          current += escaped;
+          index += 1;
+        }
+        continue;
+      }
+      if (ch === inString) {
+        inString = null;
+      }
+      continue;
+    }
+
+    if (inBlockComment) {
+      current += ch;
+      if (ch === "*" && next === "/") {
+        current += next;
+        index += 1;
+        inBlockComment = false;
+      }
+      continue;
+    }
+
+    if (ch === "/" && next === "/") {
+      current += line.slice(index);
+      break;
+    }
+    if (ch === "/" && next === "*") {
+      current += "/*";
+      index += 1;
+      inBlockComment = true;
+      continue;
+    }
+    if (ch === "\"" || ch === "'") {
+      inString = ch;
+      current += ch;
+      continue;
+    }
+
+    if (ch === "(") {
+      parenDepth += 1;
+      current += ch;
+      continue;
+    }
+    if (ch === ")") {
+      parenDepth = Math.max(0, parenDepth - 1);
+      current += ch;
+      continue;
+    }
+    if (ch === "[") {
+      bracketDepth += 1;
+      current += ch;
+      continue;
+    }
+    if (ch === "]") {
+      bracketDepth = Math.max(0, bracketDepth - 1);
+      current += ch;
+      continue;
+    }
+    if (ch === "{") {
+      braceDepth += 1;
+      current += ch;
+      continue;
+    }
+    if (ch === "}") {
+      braceDepth = Math.max(0, braceDepth - 1);
+      current += ch;
+      continue;
+    }
+    if (ch === "<") {
+      angleDepth += 1;
+      current += ch;
+      continue;
+    }
+    if (ch === ">") {
+      angleDepth = Math.max(0, angleDepth - 1);
+      current += ch;
+      continue;
+    }
+
+    if (
+      ch === "." &&
+      parenDepth === 0 &&
+      bracketDepth === 0 &&
+      braceDepth === 0 &&
+      angleDepth === 0 &&
+      !(isDigit(previous) && isDigit(next))
+    ) {
+      parts.push(current.trim());
+      current = "";
+      continue;
+    }
+
+    current += ch;
+  }
+
+  parts.push(current.trim());
+  const nonEmpty = parts.filter((value) => value.length > 0);
+  if (nonEmpty.length <= 1) {
+    return [line];
+  }
+  return nonEmpty;
+}
+
+function readWrapStyle(
+  value: AngelScriptFormatterOptions["argumentWrap"] | undefined,
+  fallback: AngelScriptFormatterOptions["argumentWrap"],
+): AngelScriptFormatterOptions["argumentWrap"] {
+  switch (value) {
+    case "never":
+    case "auto":
+    case "always":
+      return value;
+    default:
+      return fallback;
+  }
+}
+
+function readChainWrapStyle(
+  value: AngelScriptFormatterOptions["chainWrapStyle"] | undefined,
+  fallback: AngelScriptFormatterOptions["chainWrapStyle"],
+): AngelScriptFormatterOptions["chainWrapStyle"] {
+  switch (value) {
+    case "leadingDot":
+    case "trailingDot":
+      return value;
+    default:
+      return fallback;
+  }
+}
+
+function readBraceStyle(
+  value: AngelScriptFormatterOptions["braceStyle"] | undefined,
+  fallback: AngelScriptFormatterOptions["braceStyle"],
+): AngelScriptFormatterOptions["braceStyle"] {
+  switch (value) {
+    case "kr":
+    case "allman":
+      return value;
+    default:
+      return fallback;
+  }
 }

@@ -4,12 +4,19 @@
   "description": "Standalone formatter for Openplanet AngelScript with deterministic brace/indent/spacing rules.",
   "version": "0.1.0",
   "publisher": "ar",
+  "license": "Unlicense",
   "engines": {
-    "vscode": "^1.90.0"
+    "vscode": "^1.108.0"
   },
   "categories": [
     "Programming Languages",
     "Formatters"
+  ],
+  "keywords": [
+    "openplanet",
+    "angelscript",
+    "formatter",
+    "trackmania"
   ],
   "activationEvents": [
     "onLanguage:openplanet-angelscript"
@@ -21,7 +28,9 @@
   "scripts": {
     "compile": "tsc -p .",
     "watch": "tsc -w -p .",
-    "test": "npm run -s compile && node out/formatter.test.js"
+    "test": "npm run -s compile && node out/formatter.test.js",
+    "release:verify": "npm run -s test",
+    "vscode:prepublish": "npm run compile"
   },
   "contributes": {
     "configuration": {
@@ -32,6 +41,12 @@
           "default": 1,
           "minimum": 0,
           "description": "Maximum number of consecutive blank lines kept by the formatter."
+        },
+        "openplanetAngelscriptFormatter.maxLineWidth": {
+          "type": "number",
+          "default": 120,
+          "minimum": 0,
+          "description": "Preferred maximum line width for formatter wrapping logic. Set 0 to disable wrapping."
         },
         "openplanetAngelscriptFormatter.trimTrailingWhitespace": {
           "type": "boolean",
@@ -57,6 +72,30 @@
           "type": "boolean",
           "default": true,
           "description": "Insert a blank line between consecutive top-level declarations."
+        },
+        "openplanetAngelscriptFormatter.argumentWrap": {
+          "type": "string",
+          "default": "auto",
+          "enum": ["never", "auto", "always"],
+          "description": "Argument wrapping strategy for multi-argument calls."
+        },
+        "openplanetAngelscriptFormatter.chainWrap": {
+          "type": "string",
+          "default": "auto",
+          "enum": ["never", "auto", "always"],
+          "description": "Member-chain wrapping strategy for long dotted expressions."
+        },
+        "openplanetAngelscriptFormatter.chainWrapStyle": {
+          "type": "string",
+          "default": "leadingDot",
+          "enum": ["leadingDot", "trailingDot"],
+          "description": "Style for wrapped member chains: leading dot on continuation lines or trailing dot on previous lines."
+        },
+        "openplanetAngelscriptFormatter.braceStyle": {
+          "type": "string",
+          "default": "kr",
+          "enum": ["kr", "allman"],
+          "description": "Brace placement style."
         }
       }
     }
