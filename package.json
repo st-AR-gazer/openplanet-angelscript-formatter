@@ -2,6 +2,7 @@
   "name": "openplanet-angelscript-formatter",
   "displayName": "Openplanet AngelScript Formatter",
   "description": "Standalone formatter for Openplanet AngelScript with deterministic brace/indent/spacing rules.",
+  "icon": "icon.png",
   "version": "0.1.0",
   "publisher": "ar",
   "license": "Unlicense",
