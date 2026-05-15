@@ -20,7 +20,8 @@
     "trackmania"
   ],
   "activationEvents": [
-    "onLanguage:openplanet-angelscript"
+    "onLanguage:openplanet-angelscript",
+    "onCommand:openplanetAngelscriptFormatter.formatWorkspace"
   ],
   "main": "./out/extension.js",
   "extensionDependencies": [
@@ -30,10 +31,17 @@
     "compile": "tsc -p .",
     "watch": "tsc -w -p .",
     "test": "npm run -s compile && node out/formatter.test.js",
+    "release:package": "node ../openplanet-angelscript-linter/scripts/release/packageVsix.mjs",
     "release:verify": "npm run -s test",
     "vscode:prepublish": "npm run compile"
   },
   "contributes": {
+    "commands": [
+      {
+        "command": "openplanetAngelscriptFormatter.formatWorkspace",
+        "title": "Openplanet AngelScript Formatter: Format .as Files in Workspace or Plugin"
+      }
+    ],
     "configuration": {
       "title": "Openplanet AngelScript Formatter",
       "properties": {
@@ -100,6 +108,9 @@
         }
       }
     }
+  },
+  "dependencies": {
+    "openplanet-angelscript-core": "0.1.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

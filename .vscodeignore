@@ -1,0 +1,14 @@
+.github/**
+src/**
+tsconfig.json
+**/*.map
+**/*.ts
+out/test/**
+out/formatter.test.js
+test-files/**
+node_modules/**
+out/node_modules/openplanet-angelscript-core/out/test/**
+package-lock.json
+.gitignore
+*.vsix
+../**

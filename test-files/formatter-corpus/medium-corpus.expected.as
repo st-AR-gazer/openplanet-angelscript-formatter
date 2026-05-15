@@ -4,7 +4,7 @@ void Main() {
   auto x = 1;
   array<array<int>> vals;
   dictionary<string, array<uint>> map;
-  MyType@handle = @GetHandle();
+  MyType@ handle = @GetHandle();
   if (true) {
     UI::Text("hello");
   } else {

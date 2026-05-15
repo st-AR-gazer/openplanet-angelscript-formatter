@@ -1,0 +1,5 @@
+{"id":"smoke.compile_success.basic","expect":"compile_success","code":"void Main() {\n  int value = 1 + 2;\n  print(value);\n}"}
+{"id":"smoke.compile_success.loop","expect":"compile_success","code":"void Main() {\n  int sum = 0;\n  for (int i = 0; i < 5; i++) {\n    sum += i;\n  }\n  print(sum);\n}"}
+{"id":"smoke.compile_success.function_call","expect":"compile_success","code":"int Add(int a, int b) {\n  return a + b;\n}\n\nvoid Main() {\n  print(Add(2, 3));\n}"}
+{"id":"smoke.compile_success.namespace_call","expect":"compile_success","code":"void Main() {\n  UI::Text(\"cross-suite smoke\");\n}"}
+{"id":"smoke.compile_error.unclosed_block","expect":"compile_error","code":"void Main() {\n  if (true) {\n    print(\"oops\");\n}"}
